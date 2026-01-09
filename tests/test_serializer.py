@@ -17,6 +17,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cells.json import safe_json_dumps, UniversalSerializer, JSONSerializationError
+from cells.json.exceptions import CircularReferenceError
 from cells.json.utils import JsonSerializable, json_serializable, save_json, load_json, prettify_json
 
 
@@ -217,10 +218,19 @@ def test_circular_reference():
     a = {}
     a["self"] = a
 
+    # 默认行为：返回标记字符串
     result = safe_json_dumps(a)
     parsed = json.loads(result)
     assert "CircularReference" in parsed["self"]
-    print("✓ 循环引用测试通过")
+    print("✓ 循环引用测试通过（默认模式）")
+
+    # 严格模式：抛出异常
+    try:
+        safe_json_dumps(a, fail_on_circular=True)
+        assert False, "应该抛出 CircularReferenceError"
+    except CircularReferenceError as e:
+        assert "Circular reference" in str(e)
+    print("✓ 循环引用测试通过（严格模式）")
 
 
 def test_mixed_types():

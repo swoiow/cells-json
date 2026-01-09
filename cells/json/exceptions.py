@@ -29,6 +29,8 @@ class CircularReferenceError(JSONSerializationError):
     """循环引用异常
 
     当检测到循环引用时抛出此异常。
+    注意：默认情况下循环引用会被静默处理，返回标记字符串。
+    只有在启用 fail_on_circular=True 时才会抛出此异常。
 
     :param obj: 引用循环的对象
     :param path: 引用路径
@@ -36,7 +38,12 @@ class CircularReferenceError(JSONSerializationError):
     Example:
         >>> a = {}
         >>> a['self'] = a
-        >>> serializer.dumps(a)  # 可能抛出 CircularReferenceError
+        >>> # 默认行为：返回 {"self": "<CircularReference dict>"}
+        >>> result = safe_json_dumps(a)
+        >>>
+        >>> # 严格模式：抛出 CircularReferenceError
+        >>> result = safe_json_dumps(a, fail_on_circular=True)
+        CircularReferenceError: Circular reference detected for object of type dict
     """
 
     def __init__(self, obj, path: str = ""):

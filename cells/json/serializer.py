@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Set
 from uuid import UUID
 
-from cells.json.exceptions import JSONSerializationError
+from cells.json.exceptions import CircularReferenceError, JSONSerializationError
 
 
 try:
@@ -56,16 +56,19 @@ class UniversalSerializer:
         default: Optional[Callable[[Any], Any]] = None,
         strict: bool = False,
         ignore_unknown: bool = False,
+        fail_on_circular: bool = False,
     ):
         """初始化序列化器
 
         :param default: 自定义的序列化函数，会在内置处理之后调用
         :param strict: 严格模式，遇到未知类型立即抛出异常
         :param ignore_unknown: 忽略无法序列化的字段，替换为 None
+        :param fail_on_circular: 循环引用时抛出异常，默认 False（返回标记字符串）
         """
         self._default = default
         self._strict = strict
         self._ignore_unknown = ignore_unknown
+        self._fail_on_circular = fail_on_circular
         self._seen: Set[int] = set()
 
     def _serialize_datetime(self, obj: datetime) -> str:
@@ -128,9 +131,9 @@ class UniversalSerializer:
         """序列化 Path 对象
 
         :param obj: Path 对象
-        :return: 路径字符串
+        :return: 路径字符串（使用 POSIX 格式，跨平台兼容）
         """
-        return str(obj)
+        return obj.as_posix()
 
     def _serialize_numpy(self, obj: Any) -> Any:
         """序列化 numpy 对象
@@ -164,7 +167,12 @@ class UniversalSerializer:
         if isinstance(obj, pd.DataFrame):
             return obj.to_dict("records")
         elif isinstance(obj, pd.Series):
-            return obj.to_dict()
+            # Series.to_dict() 返回 {index: value} 格式
+            # 转换为更直观的格式: {name: [values]} 或直接转换为值列表
+            if obj.name is not None:
+                return {str(obj.name): obj.tolist()}
+            else:
+                return obj.to_dict()
         else:
             raise JSONSerializationError(obj, f"Unsupported pandas type: {type(obj)}")
 
@@ -178,11 +186,17 @@ class UniversalSerializer:
 
         :param obj: 普通对象
         :return: dict 或原始对象
+        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
         """
         # 检查循环引用
         obj_id = id(obj)
         if obj_id in self._seen:
-            return f"<CircularReference {type(obj).__name__}>"
+            if self._fail_on_circular:
+                # 严格模式：抛出异常
+                raise CircularReferenceError(obj)
+            else:
+                # 宽松模式：返回标记字符串
+                return f"<CircularReference {type(obj).__name__}>"
         self._seen.add(obj_id)
 
         try:
@@ -214,6 +228,7 @@ class UniversalSerializer:
 
         :param obj: 待序列化的对象
         :return: 可序列化的 Python 对象
+        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
         """
         # 处理 None
         if obj is None:
@@ -288,6 +303,7 @@ class UniversalSerializer:
         :param obj: 待序列化的对象
         :return: 可序列化的值
         :raises JSONSerializationError: 如果对象无法被序列化
+        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
         """
         return self._serialize(obj)
 
@@ -298,7 +314,10 @@ class UniversalSerializer:
         :param kwargs: json.dumps 的额外参数
         :return: JSON 字符串
         :raises JSONSerializationError: 如果序列化失败
+        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
         """
+        # 禁用 json.dumps 的循环引用检测，因为我们已经在 _serialize 中处理了
+        kwargs.setdefault("check_circular", False)
         try:
             return json.dumps(obj, default=self.default, **kwargs)
         except (TypeError, ValueError) as e:
@@ -311,7 +330,10 @@ class UniversalSerializer:
         :param fp: 文件对象
         :param kwargs: json.dump 的额外参数
         :raises JSONSerializationError: 如果序列化失败
+        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
         """
+        # 禁用 json.dump 的循环引用检测
+        kwargs.setdefault("check_circular", False)
         try:
             json.dump(obj, fp, default=self.default, **kwargs)
         except (TypeError, ValueError) as e:
@@ -340,26 +362,42 @@ def universal_serializer(obj: Any) -> Any:
         raise TypeError(str(e)) from e
 
 
-def safe_json_dumps(data: Any, **kwargs: Any) -> str:
+def safe_json_dumps(
+    data: Any,
+    fail_on_circular: bool = True,
+    **kwargs: Any,
+) -> str:
     """安全的 JSON 序列化函数
 
     使用 UniversalSerializer 进行序列化，如果失败则返回空对象或默认值。
 
     :param data: 待序列化的数据
+    :param fail_on_circular: 循环引用时抛出异常，默认 False（返回标记字符串）
     :param kwargs: json.dumps 的额外参数
     :return: JSON 字符串
     :raises JSONSerializationError: 如果序列化失败且未设置 ignore_errors
+    :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
 
     Example:
         >>> data = {"time": datetime.now(), "amount": Decimal("10.5")}
         >>> safe_json_dumps(data)
         '{"time": "2024-01-01T12:00:00", "amount": 10.5}'
+        >>>
+        >>> # 循环引用（默认静默处理）
+        >>> a = {}
+        >>> a['self'] = a
+        >>> safe_json_dumps(a)
+        '{"self": "<CircularReference dict>"}'
+        >>>
+        >>> # 循环引用（严格模式）
+        >>> safe_json_dumps(a, fail_on_circular=True)
+        CircularReferenceError: Circular reference detected for object of type dict
     """
     ignore_errors = kwargs.pop("ignore_errors", False)
     default_value = kwargs.pop("default_value", "null")
 
     try:
-        serializer = UniversalSerializer()
+        serializer = UniversalSerializer(fail_on_circular=fail_on_circular)
         return serializer.dumps(data, **kwargs)
     except JSONSerializationError as e:
         if ignore_errors:
