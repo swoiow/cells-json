@@ -1,0 +1,169 @@
+name: Build
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+        python-version: [ "3.12", "3.13" ]
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      PYTHONIOENCODING: "utf-8"
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: setup.py
+
+      - name: 📦 Create virtualenv
+        shell: bash
+        run: |
+          python -m venv venv
+          if [ -x "venv/bin/python" ]; then
+            echo "PYTHON_EXEC=$(pwd)/venv/bin/python" >> $GITHUB_ENV
+          else
+            echo "PYTHON_EXEC=$(pwd)/venv/Scripts/python.exe" >> $GITHUB_ENV
+          fi
+
+      - name: Install build deps
+        shell: bash
+        run: |
+          if [ -f requirements.txt ]; then
+            $PYTHON_EXEC -m pip install -q --upgrade -r requirements.txt
+          else
+            $PYTHON_EXEC -m pip install -q --upgrade pip pytest
+          fi
+
+      - name: Run serializer tests
+        shell: bash
+        run: |
+          $PYTHON_EXEC -m pytest tests/test_serializer.py -v
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+        python-version: [ "3.12", "3.13" ]
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      PYTHONIOENCODING: "utf-8"
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: setup.py
+
+      - name: 📦 Create virtualenv
+        shell: bash
+        run: |
+          python -m venv venv
+          if [ -x "venv/bin/python" ]; then
+            echo "PYTHON_EXEC=$(pwd)/venv/bin/python" >> $GITHUB_ENV
+          else
+            echo "PYTHON_EXEC=$(pwd)/venv/Scripts/python.exe" >> $GITHUB_ENV
+          fi
+
+      - name: Install build deps
+        shell: bash
+        run: |
+          if [ -f requirements.txt ]; then
+            $PYTHON_EXEC -m pip install -q --upgrade -r requirements.txt
+          else
+            $PYTHON_EXEC -m pip install -q --upgrade pip setuptools wheel Cython
+          fi
+
+      - name: Build (wheel + sdist)
+        shell: bash
+        run: |
+          $PYTHON_EXEC setup.py build_ext --inplace
+          $PYTHON_EXEC setup.py bdist_wheel --release
+
+      - name: List dist
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            dir dist
+          else
+            ls -al dist
+          fi
+
+      - name: Upload artifacts (per-matrix)
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: warn
+          retention-days: 3
+
+  package-artifacts:
+    name: Package all builds into one zip
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ vars.S3_BUCKET || '' }}
+      S3_ENDPOINT: ${{ vars.S3_ENDPOINT || '' }}
+      S3_PREFIX: ${{ vars.S3_PREFIX || 'builds' }}
+      AWS_DEFAULT_REGION: ${{ vars.S3_REGION || 'auto' }}
+
+    steps:
+      - name: 📥 Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: collected
+          merge-multiple: true
+
+      - name: 🚀 Upload wheels to S3/R2
+        if: ${{ env.AWS_ACCESS_KEY_ID != '' && env.S3_BUCKET != '' && startsWith(github.ref, 'refs/tags/v') }}
+        shell: bash
+        run: |
+          BUCKET_PREFIX=$(echo "${S3_PREFIX}" | sed 's|^/||;s|/$||')
+          cd collected
+          aws s3 cp . s3://$S3_BUCKET/$BUCKET_PREFIX/ \
+            --recursive \
+            --exclude "*" \
+            --include "*.whl" \
+            --endpoint-url $S3_ENDPOINT
+
+      - name: 📦 Zip and Upload Artifact
+        # 之前提到过，如果你想上传 zip，这里需要先 zip 再上传
+        run: |
+          mkdir -p packaged
+          zip -rj packaged/all-builds.zip collected/*
+
+      - name: ⬆️ Upload to GitHub
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ github.event.repository.name }}-all-builds-packaged
+          path: packaged/all-builds.zip
+          retention-days: 3
