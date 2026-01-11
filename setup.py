@@ -50,7 +50,7 @@ class ReleaseBuild(_build_ext):
         if IS_RELEASE:
             removed = 0
             for ext in ("*.py", "*.c"):
-                for src_file in PKG_ROOT.rglob(ext):
+                for src_file in BASE_DIR.rglob(ext):
                     if any(part in {".venv", "venv"} for part in src_file.parts):
                         continue
                     if src_file.name not in KEEP_FILES:
@@ -92,5 +92,5 @@ setup(
     python_requires=">=3.9",
     install_requires=[],
     cmdclass={"build_ext": ReleaseBuild},
-    ext_modules=cythonize(extensions, compiler_directives=directives, annotate=False),
+    ext_modules=cythonize(extensions, compiler_directives=directives, annotate=True),
 )
