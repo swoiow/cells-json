@@ -1,13 +1,17 @@
-"""cells-json 打包入口，支持 --release 生成 pyd/so。"""
+"""cells-json 打包入口，支持 --release 生成 pyd/so，--old 仅源码安装。"""
 
 import os
 import sys
 from pathlib import Path
 
-from Cython.Build import cythonize
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext as _build_ext
 
+
+try:
+    from Cython.Build import cythonize
+except ImportError:
+    cythonize = None
 
 BASE_DIR = Path(__file__).resolve().parent
 DIST_NAME = "cells-json"
@@ -15,12 +19,14 @@ MODULE_ROOT = "cells"
 PKG_VERSION = "0.1.0"
 PKG_ROOT = BASE_DIR / MODULE_ROOT
 
-# === 可选保留文件（不会被删除）===
 KEEP_FILES = {"__init__.py"}
 
-# === 是否发布模式 ===
-IS_RELEASE = "--release" in sys.argv
-if IS_RELEASE:
+IS_OLD = "--old" in sys.argv
+if IS_OLD:
+    sys.argv.remove("--old")
+
+IS_RELEASE = not IS_OLD and "--release" in sys.argv
+if "--release" in sys.argv:
     sys.argv.remove("--release")
 
 
@@ -59,7 +65,6 @@ class ReleaseBuild(_build_ext):
             print(f"[CLEAN] 已删除源码（发布模式），共 {removed} 个文件（保留 {'/'.join(KEEP_FILES)}）")
 
 
-# === 编译配置 ===
 directives = {
     "language_level": "3",
     "binding": False,
@@ -76,8 +81,17 @@ directives = {
     "optimize.unpack_method_calls": True,
 }
 
-py_sources = discover_py_sources()
-extensions = make_extensions(py_sources)
+py_sources = [] if IS_OLD else discover_py_sources()
+extensions = make_extensions(py_sources) if py_sources else []
+
+
+def build_ext_modules(exts):
+    if not exts:
+        return []
+    if cythonize is None:
+        raise RuntimeError("Cython is required for release builds; install it or use --old.")
+    return cythonize(exts, compiler_directives=directives, annotate=True)
+
 
 setup(
     name=DIST_NAME,
@@ -91,6 +105,6 @@ setup(
     zip_safe=False,
     python_requires=">=3.9",
     install_requires=[],
-    cmdclass={"build_ext": ReleaseBuild},
-    ext_modules=cythonize(extensions, compiler_directives=directives, annotate=True),
+    cmdclass={"build_ext": ReleaseBuild if not IS_OLD else _build_ext},
+    ext_modules=build_ext_modules(extensions),
 )
