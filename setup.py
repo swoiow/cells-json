@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-from setuptools import Extension, find_packages, setup
+from setuptools import Extension, find_namespace_packages, setup
 from setuptools.command.build_ext import build_ext as _build_ext
 
 
@@ -100,7 +100,7 @@ setup(
     author="HarmonSir",
     author_email="git@pylab.me",
     description="Cells JSON serialization utilities",
-    packages=find_packages(include=[f"{MODULE_ROOT}", f"{MODULE_ROOT}.*"]),
+    packages=find_namespace_packages(include=[f"{MODULE_ROOT}.*"]),
     include_package_data=True,
     zip_safe=False,
     python_requires=">=3.9",
