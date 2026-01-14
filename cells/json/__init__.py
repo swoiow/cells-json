@@ -10,9 +10,9 @@
 - 多种 JSON 后端支持（json、orjson）
 """
 
-from cells.json.adapter import dumps, JSONAdapter, loads
-from cells.json.exceptions import CircularReferenceError, JSONSerializationError, UnsupportedTypeError
-from cells.json.serializer import safe_json_dumps, UniversalSerializer
+from .adapter import dumps, JSONAdapter, loads
+from .exceptions import CircularReferenceError, JSONSerializationError, UnsupportedTypeError
+from .serializer import safe_json_dumps, UniversalSerializer
 
 
 __all__ = [

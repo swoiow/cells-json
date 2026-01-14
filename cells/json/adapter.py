@@ -25,7 +25,7 @@
 import json
 from typing import Any, Optional
 
-from cells.json.serializer import universal_serializer, UniversalSerializer
+from serializer import UniversalSerializer
 
 
 try:

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Set
 from uuid import UUID
 
-from cells.json.exceptions import CircularReferenceError, JSONSerializationError
+from .exceptions import CircularReferenceError, JSONSerializationError
 
 
 try:

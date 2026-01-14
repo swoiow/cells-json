@@ -7,7 +7,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
 
-from cells.json.serializer import safe_json_dumps, UniversalSerializer
+from .serializer import safe_json_dumps, UniversalSerializer
 
 
 T = TypeVar("T")
