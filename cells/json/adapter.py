@@ -25,7 +25,7 @@
 import json
 from typing import Any, Optional
 
-from serializer import UniversalSerializer
+from .serializer import UniversalSerializer
 
 
 try:
