@@ -16,10 +16,10 @@ except ImportError:
 BASE_DIR = Path(__file__).resolve().parent
 DIST_NAME = "cells-json"
 MODULE_ROOT = "cells"
-PKG_VERSION = "0.1.0"
+VERSION_FILE = BASE_DIR / MODULE_ROOT / "json" / "version.py"
 PKG_ROOT = BASE_DIR / MODULE_ROOT
 
-KEEP_FILES = {"__init__.py"}
+KEEP_FILES = {"__init__.py", "version.py"}
 
 IS_OLD = "--old" in sys.argv or os.environ.get("SETUP_OLD_INSTALL") == "1"
 if IS_OLD:
@@ -28,6 +28,13 @@ if IS_OLD:
 IS_RELEASE = not IS_OLD and "--release" in sys.argv
 if "--release" in sys.argv:
     sys.argv.remove("--release")
+
+
+def read_version() -> str:
+    version_scope: dict[str, str] = {}
+    content = VERSION_FILE.read_text(encoding="utf-8")
+    exec(content, version_scope)
+    return version_scope["__VERSION__"]
 
 
 def discover_py_sources():
@@ -95,7 +102,7 @@ def build_ext_modules(exts):
 
 setup(
     name=DIST_NAME,
-    version=PKG_VERSION,
+    version=read_version(),
     license="MPL-2.0",
     author="HarmonSir",
     author_email="git@pylab.me",

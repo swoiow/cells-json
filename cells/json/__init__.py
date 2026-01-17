@@ -13,6 +13,7 @@
 from .adapter import dumps, JSONAdapter, loads
 from .exceptions import CircularReferenceError, JSONSerializationError, UnsupportedTypeError
 from .serializer import safe_json_dumps, UniversalSerializer
+from .version import __VERSION__
 
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "JSONAdapter",
     "dumps",
     "loads",
+    "__VERSION__",
 ]
