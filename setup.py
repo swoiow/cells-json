@@ -21,9 +21,10 @@ PKG_ROOT = BASE_DIR / MODULE_ROOT
 
 KEEP_FILES = {"__init__.py", "version.py"}
 
-IS_OLD = "--old" in sys.argv or os.environ.get("SETUP_OLD_INSTALL") == "1"
+IS_OLD = 1
 if IS_OLD:
-    if "--old" in sys.argv: sys.argv.remove("--old")
+    if os.environ.get("SETUP_OLD_INSTALL") == "0": IS_OLD = 0
+    if IS_OLD and "--old" in sys.argv: sys.argv.remove("--old")
 
 IS_RELEASE = not IS_OLD and "--release" in sys.argv
 if "--release" in sys.argv:
