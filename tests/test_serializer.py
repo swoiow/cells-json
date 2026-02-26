@@ -16,8 +16,12 @@ from uuid import uuid4
 # 添加父目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cells.json import safe_json_dumps, UniversalSerializer, JSONSerializationError
-from cells.json.exceptions import CircularReferenceError
+from cells.json import (
+    safe_json_dumps,
+    UniversalSerializer,
+    JSONEncodeError,
+    CircularReferenceError,
+)
 from cells.json.utils import JsonSerializable, json_serializable, save_json, load_json, prettify_json
 
 
@@ -271,7 +275,7 @@ def test_strict_mode():
     try:
         serializer.dumps({"obj": obj})
         assert False, "应该抛出异常"
-    except JSONSerializationError:
+    except JSONEncodeError:
         print("✓ 严格模式测试通过")
 
 
