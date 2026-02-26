@@ -102,8 +102,7 @@ jobs:
       - name: Build (wheel + sdist)
         shell: bash
         run: |
-          $PYTHON_EXEC setup.py build_ext --inplace
-          $PYTHON_EXEC setup.py bdist_wheel --release
+          $PYTHON_EXEC setup.py bdist_wheel
 
       - name: List dist
         shell: bash
@@ -143,17 +142,16 @@ jobs:
           path: collected
           merge-multiple: true
 
-      - name: 🚀 Upload wheels to S3/R2
-        if: ${{ env.AWS_ACCESS_KEY_ID != '' && env.S3_BUCKET != '' && startsWith(github.ref, 'refs/tags/v') }}
-        shell: bash
+      - name: 🚀 S3/R2 Upload
+        if: ${{ env.AWS_ACCESS_KEY_ID && env.S3_BUCKET && startsWith(github.ref, 'refs/tags/v') }}
         run: |
-          BUCKET_PREFIX=$(echo "${S3_PREFIX}" | sed 's|^/||;s|/$||')
-          cd collected
-          aws s3 cp . s3://$S3_BUCKET/$BUCKET_PREFIX/ \
+          CLEAN_PREFIX=$(python3 -c "import os; print(os.getenv('S3_PREFIX', '').strip('/'))")
+          CLEAN_BUCKET=$(python3 -c "import os; print(os.getenv('S3_BUCKET', '').strip('/'))")
+          aws s3 cp collected/ s3://${CLEAN_BUCKET}/${CLEAN_PREFIX:-builds}/ \
             --recursive \
             --exclude "*" \
             --include "*.whl" \
-            --endpoint-url $S3_ENDPOINT
+            --endpoint-url ${{ env.S3_ENDPOINT }}
 
       - name: 📦 Zip and Upload Artifact
         # 之前提到过，如果你想上传 zip，这里需要先 zip 再上传

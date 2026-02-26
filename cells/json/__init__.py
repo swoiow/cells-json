@@ -19,6 +19,7 @@ from .exceptions import (
     UnsupportedTypeError,
 )
 from .serializer import safe_json_dumps, UniversalSerializer
+from .utils import prettify_json
 from .version import __VERSION__
 
 
@@ -36,5 +37,6 @@ __all__ = [
     "JSONAdapter",
     "dumps",
     "loads",
+    "prettify_json",
     "__VERSION__",
 ]
