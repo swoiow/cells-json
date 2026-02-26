@@ -4,6 +4,7 @@
 """
 
 import json
+from functools import lru_cache
 from typing import Any, Optional, Tuple, Union
 
 from .exceptions import CircularReferenceError, JSONDecodeError, JSONEncodeError
@@ -12,6 +13,8 @@ from .serializer import UniversalSerializer
 
 try:
     import orjson
+
+
     HAS_ORJSON = True
 except ImportError:
     HAS_ORJSON = False
@@ -80,7 +83,7 @@ class JSONAdapter:
             **kwargs: 传递给底层后端 dumps 方法的额外参数。
 
         Returns:
-            Union[str, bytes]: 序列化后的 JSON 内容。如果 ensure_str 为 True 则返回字符串。
+            Union[str, bytes]: 默认返回字符串。如果 ensure_str 为 True 则返回字符串。
 
         Raises:
             JSONEncodeError: 序列化过程中发生错误时抛出。
@@ -171,17 +174,10 @@ class JSONAdapter:
             ```
         """
         try:
-            if self._use_orjson:
-                return orjson.loads(s)
-            else:
-                return json.loads(s, **kwargs)
+            return orjson.loads(s) if self._use_orjson else json.loads(s, **kwargs)
         except (json.JSONDecodeError, getattr(orjson, "JSONDecodeError", json.JSONDecodeError)) as e:
             # 统一包装解码异常
-            raise JSONDecodeError(
-                str(e),
-                getattr(e, "doc", ""),
-                getattr(e, "pos", 0)
-            ) from e
+            raise JSONDecodeError(str(e), getattr(e, "doc", ""), getattr(e, "pos", 0)) from e
 
     def load(self, fp, **kwargs: Any) -> Any:
         """从文件中读取并反序列化 JSON 数据。
@@ -196,33 +192,46 @@ class JSONAdapter:
         return self.loads(fp.read(), **kwargs)
 
 
-# 内部适配器缓存，避免重复实例化
-_ADAPTER_CACHE: dict[tuple, "JSONAdapter"] = {}
+# 1. 固化核心逻辑：使用标准 LRU 缓存 (线程安全，自动淘汰)
+@lru_cache(maxsize=32)
+def _create_adapter(backend: str, config_items: tuple) -> JSONAdapter:
+    """底层工厂函数，被 lru_cache 装饰以实现对象重用。"""
+    return JSONAdapter(backend=backend, **dict(config_items))
 
 
-def _get_cached_adapter(backend: str, **kwargs: Any) -> "JSONAdapter":
-    """获取或创建缓存的适配器实例。"""
+# 默认单例
+_DEFAULT_ADAPTER = JSONAdapter(backend="auto")
+
+# 配置项白名单
+_CONFIG_KEYS = {"use_builtin", "strict", "ignore_unknown", "fail_on_circular", "use_dict", "default"}
+
+
+def _get_adapter(backend: str = "auto", **config: Any) -> JSONAdapter:
+    """获取适配器的入口逻辑。"""
+    if backend == "auto" and not config:
+        return _DEFAULT_ADAPTER
+
     try:
-        # 将 kwargs 转换为可哈希的键
-        cache_key = (backend, frozenset(kwargs.items()))
-        if cache_key not in _ADAPTER_CACHE:
-            _ADAPTER_CACHE[cache_key] = JSONAdapter(backend=backend, **kwargs)
-        return _ADAPTER_CACHE[cache_key]
+        # 将配置字典转换为可哈希的元组，以便 lru_cache 识别
+        config_items = tuple(sorted(config.items()))
+        return _create_adapter(backend, config_items)
     except (TypeError, AttributeError):
-        # 如果参数不可哈希（如自定义函数），则直接创建新实例
-        return JSONAdapter(backend=backend, **kwargs)
+        # 逃生路径：如果包含不可哈希对象（如 lambda），降级为直接创建
+        return JSONAdapter(backend=backend, **config)
 
 
-def dumps(obj: Any, backend: str = "auto", **kwargs: Any) -> Union[str, bytes]:
-    """快捷序列化函数。
+def dumps(obj: Any, backend: str = "auto", **kwargs: Any) -> str:
+    """序列化为 JSON 字符串。
 
     Args:
         obj: 待序列化的对象。
-        backend: 使用的后端，默认为 "auto"。
-        **kwargs: 额外参数。
+        backend: 使用的后端，默认为 auto；支持：auto, json, orjson。
+        **kwargs: 额外参数。支持:
+            - 配置类: use_builtin, strict, ignore_unknown, fail_on_circular, use_dict, default
+            - 运行类: indent, ensure_ascii, ensure_str, sort_keys 等
 
     Returns:
-        Union[str, bytes]: 序列化结果。
+        str: 默认返回字符串。
 
     Examples:
         ```python
@@ -231,8 +240,17 @@ def dumps(obj: Any, backend: str = "auto", **kwargs: Any) -> Union[str, bytes]:
         # '{"a": 1}'
         ```
     """
-    adapter = _get_cached_adapter(backend, **kwargs)
-    return adapter.dumps(obj)
+    # 1. 剥离配置类参数
+    config = {k: kwargs.pop(k) for k in _CONFIG_KEYS if k in kwargs}
+
+    # 2. 处理包装层特有参数
+    ensure_str = kwargs.pop("ensure_str", True)
+
+    # 3. 获取（缓存的）适配器
+    adapter = _get_adapter(backend=backend, **config)
+
+    # 4. 执行序列化，剩余的 kwargs (如 indent) 透传给底层 dumps 方法
+    return adapter.dumps(obj, ensure_str=ensure_str, **kwargs)
 
 
 def loads(s: Union[str, bytes], backend: str = "auto", **kwargs: Any) -> Any:
@@ -253,5 +271,5 @@ def loads(s: Union[str, bytes], backend: str = "auto", **kwargs: Any) -> Any:
         # {'a': 1}
         ```
     """
-    adapter = _get_cached_adapter(backend, **kwargs)
+    adapter = _get_adapter(backend=backend)
     return adapter.loads(s, **kwargs)

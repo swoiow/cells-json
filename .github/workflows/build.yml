@@ -102,8 +102,7 @@ jobs:
       - name: Build (wheel + sdist)
         shell: bash
         run: |
-          $PYTHON_EXEC setup.py build_ext --inplace
-          $PYTHON_EXEC setup.py bdist_wheel --release
+          $PYTHON_EXEC setup.py bdist_wheel
 
       - name: List dist
         shell: bash
