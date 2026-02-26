@@ -11,7 +11,13 @@
 """
 
 from .adapter import dumps, JSONAdapter, loads
-from .exceptions import CircularReferenceError, JSONSerializationError, UnsupportedTypeError
+from .exceptions import (
+    CircularReferenceError,
+    JSONDecodeError,
+    JSONEncodeError,
+    JSONSerializationError,
+    UnsupportedTypeError,
+)
 from .serializer import safe_json_dumps, UniversalSerializer
 from .version import __VERSION__
 
@@ -22,6 +28,8 @@ __all__ = [
     "safe_json_dumps",
     # 异常类
     "JSONSerializationError",
+    "JSONEncodeError",
+    "JSONDecodeError",
     "CircularReferenceError",
     "UnsupportedTypeError",
     # 适配器（支持多种 JSON 后端）

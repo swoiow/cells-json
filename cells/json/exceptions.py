@@ -1,52 +1,126 @@
-"""JSON 序列化异常模块
+"""JSON 异常模块
 
-定义 JSON 序列化过程中可能出现的异常。
+定义统一的 JSON 异常体系，确保 API 接口一致性。
 """
 
+from typing import Any
 
-class JSONSerializationError(TypeError):
-    """JSON 序列化异常
 
-    当对象无法被序列化时抛出此异常。
+class JSONError(Exception):
+    """JSON 基础异常。"""
+    pass
 
-    :param obj: 无法序列化的对象
-    :param message: 错误消息，默认会自动生成包含类型信息的消息
 
-    Example:
-        >>> raise JSONSerializationError(complex_object)
-        JSONSerializationError: Object of type ComplexType is not JSON serializable
+class JSONSerializationError(JSONError, TypeError):
+    """序列化基础异常。
+
+    继承 TypeError 以保持与标准库 json 的兼容性。
+
+    Attributes:
+        obj: 无法序列化的对象。
+        obj_type: 对象的类型。
+
+    Examples:
+        ```python
+        try:
+            raise JSONSerializationError(complex_obj)
+        except JSONSerializationError as e:
+            print(e.obj_type)
+        ```
     """
 
-    def __init__(self, obj, message: str = None):
+    def __init__(self, obj: Any = None, message: str = None):
+        """初始化序列化异常。
+
+        Args:
+            obj: 导致异常的对象。
+            message: 自定义错误消息。如果未提供，将自动生成。
+        """
         self.obj = obj
-        self.obj_type = type(obj)
+        self.obj_type = type(obj) if obj is not None else None
         if message is None:
-            message = f"Object of type {self.obj_type.__name__} is not JSON serializable"
+            if self.obj_type:
+                message = f"Object of type {self.obj_type.__name__} is not JSON serializable"
+            else:
+                message = "JSON serialization error"
         super().__init__(message)
 
 
-class CircularReferenceError(JSONSerializationError):
-    """循环引用异常
+class JSONEncodeError(JSONSerializationError):
+    """统一的编码异常。
 
-    当检测到循环引用时抛出此异常。
-    注意：默认情况下循环引用会被静默处理，返回标记字符串。
-    只有在启用 fail_on_circular=True 时才会抛出此异常。
+    Examples:
+        ```python
+        try:
+            dumps(set([1, 2]))
+        except JSONEncodeError as e:
+            print(e)
+        ```
+    """
+    pass
 
-    :param obj: 引用循环的对象
-    :param path: 引用路径
 
-    Example:
-        >>> a = {}
-        >>> a['self'] = a
-        >>> # 默认行为：返回 {"self": "<CircularReference dict>"}
-        >>> result = safe_json_dumps(a)
-        >>>
-        >>> # 严格模式：抛出 CircularReferenceError
-        >>> result = safe_json_dumps(a, fail_on_circular=True)
-        CircularReferenceError: Circular reference detected for object of type dict
+class JSONDecodeError(JSONError, ValueError):
+    """统一的解码异常。
+
+    继承 ValueError 以保持与标准库 json 的兼容性。
+
+    Attributes:
+        msg: 错误消息。
+        doc: 被解析的 JSON 文档。
+        pos: 错误发生的位置索引。
+
+    Examples:
+        ```python
+        try:
+            loads('{"invalid": json}')
+        except JSONDecodeError as e:
+            print(f"Error at {e.pos}: {e.msg}")
+        ```
     """
 
-    def __init__(self, obj, path: str = ""):
+    def __init__(self, message: str, doc: str = "", pos: int = 0):
+        """初始化解码异常。
+
+        Args:
+            message: 错误描述。
+            doc: JSON 文档内容。
+            pos: 错误在文档中的字节位置。
+        """
+        super().__init__(message)
+        self.msg = message
+        self.doc = doc
+        self.pos = pos
+
+    def __str__(self):
+        """返回格式化的错误消息。"""
+        return f"{self.msg}: line 1 column 1 (char {self.pos})" if self.pos > 0 else self.msg
+
+
+class CircularReferenceError(JSONEncodeError):
+    """循环引用异常。
+
+    Attributes:
+        path: 发现循环引用的对象路径。
+
+    Examples:
+        ```python
+        a = {}
+        a["self"] = a
+        try:
+            safe_json_dumps(a, fail_on_circular=True)
+        except CircularReferenceError as e:
+            print(e)
+        ```
+    """
+
+    def __init__(self, obj: Any, path: str = ""):
+        """初始化循环引用异常。
+
+        Args:
+            obj: 循环引用的对象。
+            path: 对象的访问路径。
+        """
         message = f"Circular reference detected for object of type {type(obj).__name__}"
         if path:
             message += f" at path: {path}"
@@ -55,18 +129,24 @@ class CircularReferenceError(JSONSerializationError):
 
 
 class UnsupportedTypeError(JSONSerializationError):
-    """不支持类型异常
+    """不支持的类型异常。
 
-    当遇到无法处理的类型时抛出此异常。
+    Attributes:
+        hint: 解决该类型序列化问题的建议。
 
-    :param obj: 不支持的对象
-    :param hint: 提示信息，说明如何处理该类型
-
-    Example:
-        >>> raise UnsupportedTypeError(custom_obj, hint="Add a to_dict() method")
+    Examples:
+        ```python
+        raise UnsupportedTypeError(complex_obj, hint="请实现 to_dict() 方法")
+        ```
     """
 
-    def __init__(self, obj, hint: str = ""):
+    def __init__(self, obj: Any, hint: str = ""):
+        """初始化不支持类型异常。
+
+        Args:
+            obj: 不支持的对象。
+            hint: 解决建议或提示。
+        """
         message = f"Unsupported type: {type(obj).__name__}"
         if hint:
             message += f". {hint}"

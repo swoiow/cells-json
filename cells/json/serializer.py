@@ -1,6 +1,6 @@
-"""JSON 序列化器核心模块
+"""JSON 序列化器核心模块。
 
-提供通用的 JSON 序列化器，支持多种 Python 数据类型的序列化。
+提供通用的 JSON 序列化逻辑，支持多种 Python 数据类型的序列化。
 """
 
 import json
@@ -11,44 +11,47 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Set
 from uuid import UUID
 
-from .exceptions import CircularReferenceError, JSONSerializationError
+from .exceptions import CircularReferenceError, JSONEncodeError, JSONSerializationError
 
 
 try:
     import numpy as np
-
-
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
 
 try:
     import pandas as pd
-
-
     HAS_PANDAS = True
 except ImportError:
     HAS_PANDAS = False
 
 
 class UniversalSerializer:
-    """通用 JSON 序列化器
+    """通用 JSON 序列化转换器。
 
     提供灵活的类型序列化能力，支持以下类型：
-    - datetime/date/time/timedelta: 转换为 ISO 格式字符串
-    - Decimal: 转换为 float
-    - UUID: 转换为字符串
-    - Enum: 转换为 value
-    - Path: 转换为字符串
-    - numpy 数组: 转换为列表
-    - pandas Series/DataFrame: 转换为 dict/list
-    - 带有 to_dict 方法的对象: 调用 to_dict()
-    - 其他对象: 使用 __dict__ 属性
+    - **日期时间**: `datetime`, `date`, `time` (ISO 格式), `timedelta` (总秒数)。
+    - **数值**: `Decimal` (转换为 float)。
+    - **标识符**: `UUID` (转换为字符串)。
+    - **枚举**: `Enum` (转换为其 value)。
+    - **路径**: `Path` (转换为 POSIX 风格字符串)。
+    - **科学计算**:
+        - `numpy`: `ndarray` (转换为 list), `generic` 类型 (转换为对应原生类型)。
+        - `pandas`: `DataFrame` (转换为记录列表), `Series` (转换为 dict/list)。
+    - **容器**: `set`, `tuple` (转换为 list)。
+    - **自定义对象**:
+        - 优先调用 `to_dict()` 方法。
+        - 其次尝试使用 `__dict__` 或 `__slots__` 属性。
 
-    Example:
-        >>> serializer = UniversalSerializer()
-        >>> serializer.dumps({"time": datetime.now()})
-        '{"time": "2024-01-01T12:00:00"}'
+    Examples:
+        ```python
+        import json
+        from datetime import datetime
+        serializer = UniversalSerializer()
+        data = {"now": datetime.now()}
+        json.dumps(data, default=serializer.default)
+        ```
     """
 
     def __init__(
@@ -57,163 +60,127 @@ class UniversalSerializer:
         strict: bool = False,
         ignore_unknown: bool = False,
         fail_on_circular: bool = False,
+        use_dict: Optional[bool] = None,
     ):
-        """初始化序列化器
+        """初始化序列化器。
 
-        :param default: 自定义的序列化函数，会在内置处理之后调用
-        :param strict: 严格模式，遇到未知类型立即抛出异常
-        :param ignore_unknown: 忽略无法序列化的字段，替换为 None
-        :param fail_on_circular: 循环引用时抛出异常，默认 False（返回标记字符串）
+        Args:
+            default: 自定义的兜底序列化函数。
+            strict: 严格模式。如果为 True，遇到未知类型将抛出异常。
+            ignore_unknown: 是否忽略未知类型（序列化为 None）。
+            fail_on_circular: 发现循环引用时是否抛出异常。如果为 False，则返回标记字符串。
+            use_dict: 是否尝试通过 __dict__ 或 __slots__ 序列化自定义对象。默认根据 ignore_unknown 自动决定。
         """
-        self._default = default
+        self._custom_default = default
         self._strict = strict
         self._ignore_unknown = ignore_unknown
         self._fail_on_circular = fail_on_circular
+        self._use_dict = use_dict if use_dict is not None else not ignore_unknown
         self._seen: Set[int] = set()
+        self._type_cache: dict[type, Callable[[Any], Any]] = {}
 
-    def _serialize_datetime(self, obj: datetime) -> str:
-        """序列化 datetime 对象
+    def _handle_unknown(self, obj: Any) -> Any:
+        """处理未知类型的统一逻辑。
 
-        :param obj: datetime 对象
-        :return: ISO 格式字符串
+        Args:
+            obj: 未知类型的对象。
+
+        Returns:
+            Any: 转换后的结果（如 None）。
+
+        Raises:
+            JSONEncodeError: 当无法处理且未开启忽略模式时抛出。
         """
-        return obj.isoformat()
+        if self._custom_default:
+            return self._custom_default(obj)
+        if self._ignore_unknown:
+            return None
+        raise JSONEncodeError(obj)
 
-    def _serialize_date(self, obj: date) -> str:
-        """序列化 date 对象
+    def default(self, obj: Any) -> Any:
+        """提供给 JSON 引擎的单层回调 (Fast Path)。
 
-        :param obj: date 对象
-        :return: ISO 格式字符串
+        Args:
+            obj: 待转换的对象。
+
+        Returns:
+            Any: 转换后的基础 Python 类型对象。
+
+        Raises:
+            JSONEncodeError: 转换失败时抛出。
         """
-        return obj.isoformat()
+        obj_type = type(obj)
+        if handler := self._type_cache.get(obj_type):
+            return handler(obj)
 
-    def _serialize_time(self, obj: time) -> str:
-        """序列化 time 对象
+        handler = self._get_handler(obj)
+        if handler:
+            self._type_cache[obj_type] = handler
+            return handler(obj)
 
-        :param obj: time 对象
-        :return: ISO 格式字符串
+        return self._handle_unknown(obj)
+
+    def _get_handler(self, obj: Any) -> Optional[Callable[[Any], Any]]:
+        """查找并返回对象的转换函数。"""
+        # 1. 基础类型
+        if isinstance(obj, (datetime, date, time)):
+            return lambda o: o.isoformat()
+        if isinstance(obj, timedelta):
+            return lambda o: o.total_seconds()
+        if isinstance(obj, Decimal):
+            return lambda o: float(o)
+        if isinstance(obj, UUID):
+            return lambda o: str(o)
+        if isinstance(obj, Enum):
+            return lambda o: o.value
+        if isinstance(obj, Path):
+            return lambda o: o.as_posix()
+        if isinstance(obj, (set, tuple)):
+            return lambda o: list(o)
+
+        # 2. 科学计算
+        if HAS_NUMPY:
+            if isinstance(obj, np.ndarray):
+                return lambda o: o.tolist()
+            if isinstance(obj, np.generic):
+                return lambda o: o.item()
+        if HAS_PANDAS:
+            if isinstance(obj, pd.DataFrame):
+                return lambda o: o.to_dict("records")
+            if isinstance(obj, pd.Series):
+                if obj.name is not None:
+                    return lambda o: {str(o.name): o.tolist()}
+                return lambda o: o.to_dict()
+
+        # 3. 自定义对象
+        if not self._strict:
+            if hasattr(obj, "to_dict") and callable(obj.to_dict):
+                return lambda o: o.to_dict()
+            if self._use_dict:
+                if hasattr(obj, "__dict__"):
+                    return lambda o: o.__dict__
+                if hasattr(obj, "__slots__"):
+                    return lambda o: {s: getattr(o, s) for s in o.__slots__ if hasattr(o, s)}
+
+        return None
+
+    def _serialize_recursive(self, obj: Any) -> Any:
+        """递归序列化 (Safe Path)。
+
+        用于支持循环引用检测和标记字符串生成。
+
+        Args:
+            obj: 待转换的对象。
+
+        Returns:
+            Any: 递归转换后的基础 Python 类型。
+
+        Raises:
+            CircularReferenceError: 检测到循环引用且开启了 fail_on_circular 时抛出。
         """
-        return obj.isoformat()
-
-    def _serialize_timedelta(self, obj: timedelta) -> float:
-        """序列化 timedelta 对象
-
-        :param obj: timedelta 对象
-        :return: 总秒数
-        """
-        return obj.total_seconds()
-
-    def _serialize_decimal(self, obj: Decimal) -> float:
-        """序列化 Decimal 对象
-
-        :param obj: Decimal 对象
-        :return: float 值
-        """
-        return float(obj)
-
-    def _serialize_uuid(self, obj: UUID) -> str:
-        """序列化 UUID 对象
-
-        :param obj: UUID 对象
-        :return: UUID 字符串
-        """
-        return str(obj)
-
-    def _serialize_enum(self, obj: Enum) -> Any:
-        """序列化 Enum 对象
-
-        :param obj: Enum 对象
-        :return: Enum 的值
-        """
-        return obj.value
-
-    def _serialize_path(self, obj: Path) -> str:
-        """序列化 Path 对象
-
-        :param obj: Path 对象
-        :return: 路径字符串（使用 POSIX 格式，跨平台兼容）
-        """
-        return obj.as_posix()
-
-    def _serialize_numpy(self, obj: Any) -> Any:
-        """序列化 numpy 对象
-
-        :param obj: numpy 对象
-        :return: Python 原生类型
-        """
-        if not HAS_NUMPY:
-            raise JSONSerializationError(obj, "numpy is not installed")
-
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64)):
-            return int(obj)
-        elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
-            return float(obj)
-        elif isinstance(obj, np.bool_):
-            return bool(obj)
-        else:
-            return obj.item()
-
-    def _serialize_pandas(self, obj: Any) -> Any:
-        """序列化 pandas 对象
-
-        :param obj: pandas 对象
-        :return: dict 或 list
-        """
-        if not HAS_PANDAS:
-            raise JSONSerializationError(obj, "pandas is not installed")
-
-        if isinstance(obj, pd.DataFrame):
-            return obj.to_dict("records")
-        elif isinstance(obj, pd.Series):
-            # Series.to_dict() 返回 {index: value} 格式
-            # 转换为更直观的格式: {name: [values]} 或直接转换为值列表
-            if obj.name is not None:
-                return {str(obj.name): obj.tolist()}
-            else:
-                return obj.to_dict()
-        else:
-            raise JSONSerializationError(obj, f"Unsupported pandas type: {type(obj)}")
-
-    def _serialize_custom_object(self, obj: Any) -> Any:
-        """序列化普通对象
-
-        尝试以下方法：
-        1. 调用 to_dict() 方法
-        2. 使用 __dict__ 属性
-        3. 使用 __slots__ 属性
-
-        :param obj: 普通对象
-        :return: dict 或原始对象
-        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
-        """
-        # 检查循环引用
-        if hasattr(obj, "to_dict") and callable(obj.to_dict):
-            return self._serialize(obj.to_dict())
-
-        if hasattr(obj, "__dict__"):
-            return self._serialize(obj.__dict__)
-
-        if hasattr(obj, "__slots__"):
-            slot_data = {s: getattr(obj, s) for s in obj.__slots__ if hasattr(obj, s)}
-            return self._serialize(slot_data)
-
-        raise JSONSerializationError(obj)
-
-    def _serialize(self, obj: Any) -> Any:
-        """递归序列化对象
-
-        :param obj: 待序列化的对象
-        :return: 可序列化的 Python 对象
-        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
-        """
-
-        # 處理基礎不可變類型（不參與循環引用檢測，提升性能）
         if obj is None or isinstance(obj, (str, int, float, bool)):
             return obj
 
-        # 2. 循環引用檢測
         obj_id = id(obj)
         if obj_id in self._seen:
             if self._fail_on_circular:
@@ -221,179 +188,144 @@ class UniversalSerializer:
             return f"<CircularReference {type(obj).__name__}>"
 
         self._seen.add(obj_id)
-
         try:
-            # 处理 datetime 相关类型
-            if isinstance(obj, datetime):
-                return self._serialize_datetime(obj)
-            if isinstance(obj, date):
-                return self._serialize_date(obj)
-            if isinstance(obj, time):
-                return self._serialize_time(obj)
-            if isinstance(obj, timedelta):
-                return self._serialize_timedelta(obj)
-
-            # 处理 Decimal
-            if isinstance(obj, Decimal):
-                return self._serialize_decimal(obj)
-
-            # 处理 UUID
-            if isinstance(obj, UUID):
-                return self._serialize_uuid(obj)
-
-            # 处理 Enum
-            if isinstance(obj, Enum):
-                return self._serialize_enum(obj)
-
-            # 处理 Path
-            if isinstance(obj, Path):
-                return self._serialize_path(obj)
-
-            # 处理 numpy
-            if HAS_NUMPY and isinstance(obj, np.generic) or (
-                hasattr(obj, "__class__") and obj.__class__.__module__ == "numpy"
-            ):
-                return self._serialize_numpy(obj)
-
-            # 处理 pandas
-            if HAS_PANDAS:
-                if isinstance(obj, (pd.DataFrame, pd.Series)):
-                    return self._serialize_pandas(obj)
-
-            # 处理字典
             if isinstance(obj, dict):
-                return {k: self._serialize(v) for k, v in obj.items()}
+                return {str(k): self._serialize_recursive(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple, set)):
+                return [self._serialize_recursive(item) for item in obj]
 
-            # 处理列表/元组/集合
-            if isinstance(obj, (list, tuple)):
-                return [self._serialize(item) for item in obj]
-            if isinstance(obj, set):
-                return [self._serialize(item) for item in obj]
-
-            # 處理自定義對象（嘗試轉換為 dict 後再次遞迴）
-            return self._serialize_custom_object(obj)
-        except (JSONSerializationError, TypeError):
-            # 異常與未知類型處理邏輯
-            if self._strict:
-                raise
-            if self._ignore_unknown:
-                return None
-            if self._default:
-                return self._default(obj)
-            raise JSONSerializationError(obj)
+            # 对于其他类型，先尝试单层转换
+            try:
+                res = self.default(obj)
+                # 如果返回的是 None 且开启了 ignore_unknown，直接返回 None
+                if res is None and self._ignore_unknown:
+                    return None
+                # 如果返回了新对象，继续递归
+                if res is not obj:
+                    return self._serialize_recursive(res)
+            except JSONEncodeError:
+                pass
+            
+            return self._handle_unknown(obj)
         finally:
-            # 退出當前分支時移除 ID，支持同一對象出現在不同路徑
             self._seen.discard(obj_id)
 
-    def default(self, obj: Any) -> Any:
-        """JSON encoder 的 default 方法
+    def encode(self, obj: Any) -> Any:
+        """完整地将对象树转换为基础 Python 类型。
 
-        :param obj: 待序列化的对象
-        :return: 可序列化的值
-        :raises JSONSerializationError: 如果对象无法被序列化
-        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
+        Args:
+            obj: 原始对象树。
+
+        Returns:
+            Any: 转换后的对象树。
         """
-        return self._serialize(obj)
+        self._seen.clear()
+        return self._serialize_recursive(obj)
 
-    def dumps(self, obj: Any, **kwargs: Any) -> str:
-        """将对象序列化为 JSON 字符串
+    def dumps(self, obj: Any, recursive: bool = False, **kwargs: Any) -> str:
+        """将对象序列化为 JSON 字符串。
 
-        :param obj: 待序列化的对象
-        :param kwargs: json.dumps 的额外参数
-        :return: JSON 字符串
-        :raises JSONSerializationError: 如果序列化失败
-        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
+        Args:
+            obj: 待序列化的对象。
+            recursive: 是否强制执行递归预转换。
+            **kwargs: 透传给 json.dumps 的参数。
+
+        Returns:
+            str: JSON 字符串。
+
+        Raises:
+            JSONEncodeError: 序列化失败时抛出。
+            CircularReferenceError: 发现循环引用时抛出。
         """
-        # 禁用 json.dumps 的循环引用检测，因为我们已经在 _serialize 中处理了
-        kwargs.setdefault("check_circular", False)
         try:
-            return json.dumps(obj, default=self.default, **kwargs)
+            if recursive or self._fail_on_circular or not kwargs.get("check_circular", True):
+                return json.dumps(self.encode(obj), **kwargs)
+            else:
+                return json.dumps(obj, default=self.default, **kwargs)
         except (TypeError, ValueError) as e:
-            raise JSONSerializationError(obj, str(e)) from e
+            if "Circular reference" in str(e):
+                if self._fail_on_circular:
+                    raise CircularReferenceError(obj)
+            raise JSONEncodeError(obj, str(e)) from e
 
     def dump(self, obj: Any, fp, **kwargs: Any) -> None:
-        """将对象序列化并写入文件
+        """将对象序列化并写入文件流。
 
-        :param obj: 待序列化的对象
-        :param fp: 文件对象
-        :param kwargs: json.dump 的额外参数
-        :raises JSONSerializationError: 如果序列化失败
-        :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
+        Args:
+            obj: 待序列化的对象。
+            fp: 文件类对象。
+            **kwargs: 额外参数。
+
+        Raises:
+            JSONEncodeError: 序列化失败时抛出。
         """
-        # 禁用 json.dump 的循环引用检测
-        kwargs.setdefault("check_circular", False)
         try:
-            json.dump(obj, fp, default=self.default, **kwargs)
+            if self._fail_on_circular or not kwargs.get("check_circular", True):
+                json.dump(self.encode(obj), fp, **kwargs)
+            else:
+                json.dump(obj, fp, default=self.default, **kwargs)
         except (TypeError, ValueError) as e:
-            raise JSONSerializationError(obj, str(e)) from e
+            raise JSONEncodeError(obj, str(e)) from e
 
 
 def universal_serializer(obj: Any) -> Any:
-    """通用的序列化函数
+    """快捷回调函数。
 
-    这是一个独立的函数版本，方便作为 json.dumps 的 default 参数使用。
+    Args:
+        obj: 待转换的对象。
 
-    :param obj: 待序列化的对象
-    :return: 可序列化的值
-    :raises TypeError: 如果对象无法被序列化
-
-    Example:
-        >>> import json
-        >>> data = {"time": datetime.now(), "amount": Decimal("10.5")}
-        >>> json.dumps(data, default=universal_serializer)
-        '{"time": "2024-01-01T12:00:00", "amount": 10.5}'
+    Returns:
+        Any: 转换结果。
     """
-    serializer = UniversalSerializer()
-    try:
-        return serializer.default(obj)
-    except JSONSerializationError as e:
-        raise TypeError(str(e)) from e
+    return UniversalSerializer().default(obj)
 
 
 def safe_json_dumps(
     data: Any,
-    fail_on_circular: bool = True,
+    *,
+    ignore_errors: bool = False,
+    default_value: str = "null",
+    strict: bool = False,
+    ignore_unknown: bool = False,
+    fail_on_circular: bool = False,
+    use_dict: Optional[bool] = None,
     **kwargs: Any,
 ) -> str:
-    """安全的 JSON 序列化函数
+    """安全的 JSON 序列化函数 (显式参数版)。
 
-    使用 UniversalSerializer 进行序列化，如果失败则返回空对象或默认值。
+    Args:
+        data: 待序列化的数据。
+        ignore_errors: 发生错误时是否忽略并返回 default_value。
+        default_value: 忽略错误时返回的默认字符串。
+        strict: 严格模式，遇到未知类型抛出异常。
+        ignore_unknown: 忽略未知类型，序列化为 None。
+        fail_on_circular: 发现循环引用时抛出异常 (False 则返回 marker 字符串)。
+        use_dict: 是否自动使用 __dict__ 序列化自定义对象。
+        **kwargs: 传递给 json.dumps 的参数 (如 indent, ensure_ascii 等)。
 
-    :param data: 待序列化的数据
-    :param fail_on_circular: 循环引用时抛出异常，默认 False（返回标记字符串）
-    :param kwargs: json.dumps 的额外参数
-    :return: JSON 字符串
-    :raises JSONSerializationError: 如果序列化失败且未设置 ignore_errors
-    :raises CircularReferenceError: 如果 fail_on_circular=True 且检测到循环引用
+    Returns:
+        str: JSON 字符串。
 
-    Example:
-        >>> data = {"time": datetime.now(), "amount": Decimal("10.5")}
-        >>> safe_json_dumps(data)
-        '{"time": "2024-01-01T12:00:00", "amount": 10.5}'
-        >>>
-        >>> # 循环引用（默认静默处理）
-        >>> a = {}
-        >>> a['self'] = a
-        >>> safe_json_dumps(a)
-        '{"self": "<CircularReference dict>"}'
-        >>>
-        >>> # 循环引用（严格模式）
-        >>> safe_json_dumps(a, fail_on_circular=True)
-        CircularReferenceError: Circular reference detected for object of type dict
+    Raises:
+        JSONEncodeError: 序列化失败且未开启 ignore_errors 时抛出。
+        CircularReferenceError: 发现循环引用且开启了 fail_on_circular时抛出。
+
+    Examples:
+        ```python
+        from datetime import datetime
+        data = {"time": datetime.now()}
+        safe_json_dumps(data, indent=2)
+        ```
     """
-    ignore_errors = kwargs.pop("ignore_errors", False)
-    default_value = kwargs.pop("default_value", "null")
-    strict = kwargs.pop("strict", False)
-    ignore_unknown = kwargs.pop("ignore_unknown", False)
-
     try:
         serializer = UniversalSerializer(
-            fail_on_circular=fail_on_circular,
             strict=strict,
-            ignore_unknown=ignore_unknown
+            ignore_unknown=ignore_unknown,
+            fail_on_circular=fail_on_circular,
+            use_dict=use_dict
         )
-        return serializer.dumps(data, **kwargs)
-    except (JSONSerializationError, CircularReferenceError):
+        return serializer.dumps(data, recursive=True, **kwargs)
+    except (JSONSerializationError, JSONEncodeError, CircularReferenceError):
         if ignore_errors:
             return default_value
         raise
