@@ -31,6 +31,36 @@ _ORJSON_SAFE_LOADS_KWARGS = set()
 _JSON_BASIC_KEY_TYPES = (str, int, float, bool, type(None))
 
 
+def _escape_codepoint_for_json_ascii(character: str) -> str:
+    codepoint = ord(character)
+    if codepoint <= 0xFFFF:
+        return f"\\u{codepoint:04x}"
+
+    codepoint -= 0x10000
+    high_surrogate = 0xD800 + (codepoint >> 10)
+    low_surrogate = 0xDC00 + (codepoint & 0x3FF)
+    return f"\\u{high_surrogate:04x}\\u{low_surrogate:04x}"
+
+
+def _ensure_ascii_json_text(json_text: str) -> str:
+    if json_text.isascii():
+        return json_text
+
+    ascii_chunks: list[str] = []
+    for character in json_text:
+        if character.isascii():
+            ascii_chunks.append(character)
+            continue
+        ascii_chunks.append(_escape_codepoint_for_json_ascii(character))
+    return "".join(ascii_chunks)
+
+
+def _ensure_ascii_json_bytes(json_bytes: bytes) -> bytes:
+    if json_bytes.isascii():
+        return json_bytes
+    return _ensure_ascii_json_text(json_bytes.decode("utf-8")).encode("ascii")
+
+
 def _raise_orjson_parameter_error(function_name: str, parameter_name: str) -> None:
     raise TypeError(
         f"{function_name}() does not support parameter '{parameter_name}' with the active orjson backend. "
@@ -70,7 +100,6 @@ def _is_default_json_decoder(cls: Any) -> bool:
 def _validate_orjson_dumps_parameters(
     *,
     skipkeys: bool,
-    ensure_ascii: bool,
     check_circular: bool,
     allow_nan: bool,
     cls: Any,
@@ -80,8 +109,6 @@ def _validate_orjson_dumps_parameters(
     extra_kwargs: dict[str, Any],
 ) -> int:
     option = 0
-    if ensure_ascii:
-        _raise_orjson_parameter_error("dumps", "ensure_ascii")
     if not allow_nan:
         _raise_orjson_parameter_error("dumps", "allow_nan")
     if not _is_default_json_encoder(cls):
@@ -179,7 +206,6 @@ class JSONAdapter:
             if HAS_ORJSON and self._backend != "json":
                 validated_option = _validate_orjson_dumps_parameters(
                     skipkeys=skipkeys,
-                    ensure_ascii=ensure_ascii,
                     check_circular=check_circular,
                     allow_nan=allow_nan,
                     cls=cls,
@@ -195,6 +221,8 @@ class JSONAdapter:
                     option=validated_option if option is None else (option | validated_option),
                     **kwargs,
                 )
+                if ensure_ascii:
+                    result = _ensure_ascii_json_bytes(result)
             else:
                 result = self._json_dumps(
                     obj,

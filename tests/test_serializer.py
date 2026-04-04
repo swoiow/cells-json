@@ -444,21 +444,19 @@ def test_orjson_indent_and_sort_keys():
     print("✓ orjson 参数适配测试通过")
 
 
-def test_orjson_unsupported_dump_parameter_requires_json_backend():
-    """测试不支持的编码参数会要求显式指定 json backend"""
-    print("测试 dumps 不支持参数报错...")
+def test_orjson_ensure_ascii_is_adapted():
+    """测试 ensure_ascii=True 在 orjson 主路径下会做兼容转换"""
+    print("测试 dumps ensure_ascii 适配...")
+    result = dumps({"name": "中文", "emoji": "😀"}, ensure_ascii=True)
+    assert result.isascii()
+    assert "\\u4e2d\\u6587" in result
+    assert "\\ud83d\\ude00" in result
+    parsed = loads(result)
+    assert parsed == {"name": "中文", "emoji": "😀"}
     if not HAS_ORJSON:
-        result = dumps({"name": "中文"}, ensure_ascii=True)
-        assert "\\u4e2d\\u6587" in result
-        print("⊘ orjson 未安装，auto 已退回 json backend")
+        print("⊘ orjson 未安装，当前由 json backend 原生处理")
         return
-    try:
-        dumps({"name": "中文"}, ensure_ascii=True)
-        assert False, "应该提示显式指定 json backend"
-    except TypeError as exc:
-        assert "backend=\"json\"" in str(exc)
-        assert "ensure_ascii" in str(exc)
-    print("✓ dumps 不支持参数报错测试通过")
+    print("✓ dumps ensure_ascii 适配测试通过")
 
 
 def test_orjson_skipkeys_is_adapted():
@@ -533,7 +531,7 @@ def run_all_tests():
     test_parse_float_requires_json_backend()
     test_adapter_instance_stdlib_signature()
     test_orjson_indent_and_sort_keys()
-    test_orjson_unsupported_dump_parameter_requires_json_backend()
+    test_orjson_ensure_ascii_is_adapted()
     test_orjson_skipkeys_is_adapted()
     test_orjson_compact_separators_is_adapted()
     test_orjson_check_circular_false_is_accepted()
